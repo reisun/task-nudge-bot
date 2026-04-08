@@ -51,27 +51,39 @@ def post_tasks(tasks: list[dict]) -> str | None:
 
 @app.event("message")
 def handle_message(event: dict, say) -> None:
-    """スレッド内の返信を処理."""
-    # スレッド返信のみ対象
-    thread_ts = event.get("thread_ts")
-    if not thread_ts:
-        return
-
-    # botが投稿したメッセージのスレッドのみ対応
-    if thread_ts not in _bot_message_timestamps:
-        return
-
+    """チャンネルメッセージおよびスレッド内の返信を処理."""
     # bot自身のメッセージは無視
-    if event.get("bot_id"):
+    if event.get("bot_id") or event.get("subtype"):
+        return
+
+    channel = os.environ.get("SLACK_CHANNEL_ID", "")
+    if event.get("channel") != channel:
         return
 
     user_text = event.get("text", "")
+    thread_ts = event.get("thread_ts")
 
-    # 「完了」パターンの検出
-    if _handle_completion(user_text, thread_ts, say):
+    # --- スレッド返信 ---
+    if thread_ts and thread_ts in _bot_message_timestamps:
+        # 「完了」パターンの検出
+        if _handle_completion(user_text, thread_ts, say):
+            return
+
+        tasks_context = _format_tasks_context()
+        try:
+            reply = generate_nudge(user_text, tasks_context)
+        except Exception:
+            logger.exception("AI nudge generation failed")
+            reply = "ちょっとエラーが起きちゃった :sweat_smile: もう一度試してみて！"
+
+        say(text=reply, thread_ts=thread_ts)
         return
 
-    # AI Nudge応答
+    # --- チャンネルへの直接メッセージ ---
+    if thread_ts:
+        return  # bot以外のスレッドには反応しない
+
+    ts = event.get("ts")
     tasks_context = _format_tasks_context()
     try:
         reply = generate_nudge(user_text, tasks_context)
@@ -79,7 +91,7 @@ def handle_message(event: dict, say) -> None:
         logger.exception("AI nudge generation failed")
         reply = "ちょっとエラーが起きちゃった :sweat_smile: もう一度試してみて！"
 
-    say(text=reply, thread_ts=thread_ts)
+    say(text=reply, thread_ts=ts)
 
 
 def _handle_completion(user_text: str, thread_ts: str, say) -> bool:
