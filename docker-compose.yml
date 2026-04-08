@@ -6,6 +6,7 @@ services:
       - TOKEN_FILE=/data/.tokens.json
     volumes:
       - bot-data:/data
+      - ~/.claude:/root/.claude:ro
     restart: unless-stopped
 
 volumes:
