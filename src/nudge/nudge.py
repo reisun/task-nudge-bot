@@ -2,12 +2,18 @@
 
 import logging
 import subprocess
+from datetime import datetime
+
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
-あなたはタスク管理のナッジbotです。
-ユーザーが今日やるべきタスクについて話しかけてきます。
+あなたは生活支援botです。
+タスク管理を通じて、ユーザーがより良い日常を送れるようサポートすることが目的です。
+タスクの進捗を促すだけでなく、体調・気分・生活リズムにも気を配ってください。
+
+ユーザーが話しかけてきたら、時間帯や状況に合わせて自然に応じてください。
 優しく、でも具体的に「じゃあこれからやろうか」と促してください。
 タスクの完了を報告されたら褒めてください。
 日本語で、カジュアルな口調で応答してください。
@@ -29,8 +35,13 @@ def generate_nudge(user_message: str, tasks_context: str) -> str:
     Returns:
         AIからの応答テキスト
     """
+    now = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M")
+
     prompt = f"""\
-## 今日のタスク
+## 現在時刻（日本時間）
+{now}
+
+## タスク一覧
 {tasks_context}
 
 ## ユーザーの発言
