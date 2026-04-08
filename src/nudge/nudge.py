@@ -43,7 +43,7 @@ def generate_nudge(user_message: str, tasks_context: str) -> str:
                 "claude",
                 "--print",
                 "-p", prompt,
-                "--system", SYSTEM_PROMPT,
+                "--system-prompt", SYSTEM_PROMPT,
             ],
             capture_output=True,
             text=True,
