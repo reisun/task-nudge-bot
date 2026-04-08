@@ -23,7 +23,8 @@ def _notify_job(ticktick: TickTickClient) -> None:
 
 def create_scheduler(ticktick: TickTickClient) -> BackgroundScheduler:
     """スケジューラーを作成して返す（まだstart()は呼ばない）."""
-    hour = int(os.environ.get("NOTIFY_CRON_HOUR", "9"))
+    start_hour = int(os.environ.get("NOTIFY_START_HOUR", "9"))
+    end_hour = int(os.environ.get("NOTIFY_END_HOUR", "23"))
     minute = int(os.environ.get("NOTIFY_CRON_MINUTE", "0"))
     timezone = os.environ.get("TZ", "Asia/Tokyo")
 
@@ -31,12 +32,12 @@ def create_scheduler(ticktick: TickTickClient) -> BackgroundScheduler:
     scheduler.add_job(
         _notify_job,
         trigger="cron",
-        hour=hour,
+        hour=f"{start_hour}-{end_hour}",
         minute=minute,
         args=[ticktick],
-        id="daily_notify",
-        name="Daily task notification",
+        id="hourly_notify",
+        name="Hourly task notification",
     )
 
-    logger.info("Scheduler configured: %02d:%02d (%s)", hour, minute, timezone)
+    logger.info("Scheduler configured: every hour %02d:00-%02d:00 (%s)", start_hour, end_hour, timezone)
     return scheduler
