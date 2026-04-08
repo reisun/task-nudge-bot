@@ -31,9 +31,9 @@ def post_tasks(tasks: list[dict]) -> str | None:
     channel = os.environ["SLACK_CHANNEL_ID"]
 
     if not tasks:
-        text = "今日のタスクはありません :tada: ゆっくり休んでください！"
+        text = "<!channel> 今日のタスクはありません :tada: ゆっくり休んでください！"
     else:
-        lines = ["*今日のタスク* :memo:\n"]
+        lines = ["<!channel> *今日のタスク* :memo:\n"]
         for i, task in enumerate(tasks, 1):
             project = task.get("_project_name", "")
             title = task.get("title", "(no title)")
@@ -52,6 +52,9 @@ def post_tasks(tasks: list[dict]) -> str | None:
 @app.event("message")
 def handle_message(event: dict, say) -> None:
     """チャンネルメッセージおよびスレッド内の返信を処理."""
+    logger.info("handle_message called: channel=%s text=%s bot_id=%s subtype=%s",
+                event.get("channel"), (event.get("text") or "")[:40],
+                event.get("bot_id"), event.get("subtype"))
     # bot自身のメッセージは無視
     if event.get("bot_id") or event.get("subtype"):
         return
@@ -83,7 +86,6 @@ def handle_message(event: dict, say) -> None:
     if thread_ts:
         return  # bot以外のスレッドには反応しない
 
-    ts = event.get("ts")
     tasks_context = _format_tasks_context()
     try:
         reply = generate_nudge(user_text, tasks_context)
@@ -91,7 +93,7 @@ def handle_message(event: dict, say) -> None:
         logger.exception("AI nudge generation failed")
         reply = "ちょっとエラーが起きちゃった :sweat_smile: もう一度試してみて！"
 
-    say(text=reply, thread_ts=ts)
+    say(text=reply)
 
 
 def _handle_completion(user_text: str, thread_ts: str, say) -> bool:
@@ -148,8 +150,20 @@ def _find_task(hint: str) -> dict | None:
     return None
 
 
+def _refresh_tasks() -> None:
+    """TickTickからタスクを再取得してキャッシュを更新."""
+    global _current_tasks
+    if ticktick_client and not _current_tasks:
+        try:
+            _current_tasks = ticktick_client.get_all_tasks()
+            logger.info("Refreshed tasks: %d found", len(_current_tasks))
+        except Exception:
+            logger.exception("Failed to refresh tasks")
+
+
 def _format_tasks_context() -> str:
     """現在のタスクリストを文字列化."""
+    _refresh_tasks()
     if not _current_tasks:
         return "タスクはありません。"
     lines = []

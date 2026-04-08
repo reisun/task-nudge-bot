@@ -87,9 +87,8 @@ class TickTickClient:
         """プロジェクト内のタスクデータを取得."""
         return self._get(f"/project/{project_id}/data")
 
-    def get_todays_tasks(self) -> list[dict]:
-        """今日が期限のタスクを全プロジェクトから取得."""
-        today = date.today().isoformat()  # "YYYY-MM-DD"
+    def get_all_tasks(self) -> list[dict]:
+        """未完了タスクを全プロジェクトから取得."""
         projects = self.get_projects()
         tasks: list[dict] = []
 
@@ -99,14 +98,19 @@ class TickTickClient:
             except httpx.HTTPStatusError:
                 continue
             for task in data.get("tasks", []):
-                due = task.get("dueDate", "")
-                # TickTick returns ISO datetime; compare date portion
-                if due and due[:10] == today:
-                    task["_project_id"] = proj["id"]
-                    task["_project_name"] = proj.get("name", "")
-                    tasks.append(task)
+                if task.get("status", 0) != 0:
+                    continue  # 完了済みはスキップ
+                task["_project_id"] = proj["id"]
+                task["_project_name"] = proj.get("name", "")
+                tasks.append(task)
 
         return tasks
+
+    def get_todays_tasks(self) -> list[dict]:
+        """今日が期限のタスクを全プロジェクトから取得."""
+        today = date.today().isoformat()  # "YYYY-MM-DD"
+        all_tasks = self.get_all_tasks()
+        return [t for t in all_tasks if (t.get("dueDate") or "")[:10] == today]
 
     def complete_task(self, project_id: str, task_id: str) -> None:
         """タスクを完了にする."""
