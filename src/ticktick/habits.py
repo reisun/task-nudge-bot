@@ -4,9 +4,17 @@ import asyncio
 import json
 import logging
 import os
+import re
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from ticktick_sdk import TickTickClient
+
+JST = ZoneInfo("Asia/Tokyo")
+
+# Python weekday (0=Mon) → RRULE BYDAY
+_WEEKDAY_MAP = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +42,19 @@ def _get_v1_token() -> str | None:
     return None
 
 
+def _is_today_habit(repeat_rule: str | None) -> bool:
+    """RRULEのBYDAYに今日の曜日が含まれているか判定."""
+    if not repeat_rule:
+        return True  # ルールなしは毎日扱い
+    today_byday = _WEEKDAY_MAP[datetime.now(JST).weekday()]
+    byday_match = re.search(r"BYDAY=([A-Z,]+)", repeat_rule)
+    if not byday_match:
+        return True  # BYDAYなしは毎日扱い
+    return today_byday in byday_match.group(1).split(",")
+
+
 async def _fetch_habits() -> list[dict]:
-    """V2 APIから習慣一覧を取得."""
+    """V2 APIから今日の習慣一覧を取得."""
     v1_token = _get_v1_token()
     client = TickTickClient(
         client_id=os.environ["TICKTICK_CLIENT_ID"],
@@ -49,6 +68,8 @@ async def _fetch_habits() -> list[dict]:
         habits = await client.get_all_habits()
         result = []
         for h in habits:
+            if not _is_today_habit(getattr(h, "repeat_rule", None)):
+                continue
             result.append({
                 "id": h.id,
                 "name": h.name,
