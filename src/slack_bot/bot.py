@@ -25,15 +25,15 @@ app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
 
 
 def post_tasks(tasks: list[dict]) -> str | None:
-    """今日のタスク一覧をSlackチャンネルに投稿. 投稿のtsを返す."""
+    """タスク一覧をSlackチャンネルに投稿. 投稿のtsを返す."""
     global _current_tasks
     _current_tasks = tasks
     channel = os.environ["SLACK_CHANNEL_ID"]
 
     if not tasks:
-        text = "<!channel> 今日のタスクはありません :tada: ゆっくり休んでください！"
+        text = "<!channel> タスクはありません :tada: ゆっくり休んでください！"
     else:
-        lines = ["<!channel> *今日のタスク* :memo:\n"]
+        lines = ["<!channel> *タスク一覧* :memo:\n"]
         for i, task in enumerate(tasks, 1):
             project = task.get("_project_name", "")
             title = task.get("title", "(no title)")

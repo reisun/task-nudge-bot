@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 def _notify_job(ticktick: TickTickClient) -> None:
     """タスクを取得してSlackに投稿するジョブ."""
     try:
-        tasks = ticktick.get_todays_tasks()
+        tasks = ticktick.get_all_tasks()
         logger.info("Fetched %d tasks for today", len(tasks))
         post_tasks(tasks)
     except Exception:
