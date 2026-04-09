@@ -9,7 +9,7 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from src.nudge.nudge import generate_nudge, generate_notification
-from src.ticktick.client import TickTickClient
+from src.ticktick.client import TickTickClient, _parse_due_date_jst
 from src.ticktick.habits import get_habits, checkin_habit
 
 logger = logging.getLogger(__name__)
@@ -65,7 +65,8 @@ def post_tasks(categorized: dict[str, list[dict]],
         lines = ["<!channel> *タスク通知*\n"]
         for t in notify_tasks:
             due = t.get("dueDate", "")
-            lines.append(f"• {t.get('title', '(no title)')} (期限: {due[:10]})")
+            due_str = _parse_due_date_jst(due).isoformat() if due else ""
+            lines.append(f"• {t.get('title', '(no title)')} (期限: {due_str})")
         text = "\n".join(lines)
 
     resp = app.client.chat_postMessage(channel=channel, text=text)
@@ -259,7 +260,11 @@ def _format_categorized(categorized: dict[str, list[dict]], order: list[str]) ->
         lines.append(f"\n{label_map[cat_key]}")
         for t in tasks:
             due = t.get("dueDate", "")
-            due_suffix = f" (期限: {due[:10]})" if due else ""
+            if due:
+                due_date = _parse_due_date_jst(due)
+                due_suffix = f" (期限: {due_date.isoformat()})"
+            else:
+                due_suffix = ""
             lines.append(f"{idx}. {t.get('title', '(no title)')}{due_suffix}")
             idx += 1
     return "\n".join(lines)
