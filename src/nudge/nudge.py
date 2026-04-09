@@ -1,8 +1,9 @@
 """AI Nudge — Claude CLIでナッジ応答を生成."""
 
 import logging
-import re
 import subprocess
+import time
+import threading
 from datetime import datetime
 
 from zoneinfo import ZoneInfo
@@ -10,54 +11,68 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger(__name__)
 
 
-def _markdown_to_slack_mrkdwn(text: str) -> str:
-    """Markdown記法をSlack mrkdwn形式に変換."""
-    # **bold** → *bold*
-    text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
-    # __bold__ → *bold*
-    text = re.sub(r"__(.+?)__", r"*\1*", text)
-    # [text](url) → <url|text>
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"<\2|\1>", text)
-    # ### heading → *heading*
-    text = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", text, flags=re.MULTILINE)
-    return text
-
 SYSTEM_PROMPT = """\
 あなたは生活支援botです。
 タスク管理を通じて、ユーザーがより良い日常を送れるようサポートすることが目的です。
 タスクの進捗を促すだけでなく、体調・気分・生活リズムにも気を配ってください。
+Slackチャンネルに投稿されるため書式に注意してください。
 
 ユーザーが話しかけてきたら、時間帯や状況に合わせて自然に応じてください。
 優しく、でも具体的に「じゃあこれからやろうか」と促してください。
-タスクの完了を報告されたら褒めてください。
 日本語で、カジュアルな口調で応答してください。
 応答は短めに（2-3文以内）。
 
-あなたはTickTickと連携しており、ユーザーのタスク情報にアクセスできます。
-「今日のタスク」セクションに現在のタスク一覧が含まれています。
-タスクがない場合でも、ユーザーの質問や雑談には気軽に応じてください。
+あなたはTickTickと連携しており、ユーザーのタスクと習慣の情報にアクセスできます。
+コンテキストにタスク一覧と習慣一覧が含まれています。
+「タスク教えて」等の一般的な質問にはタスクと習慣の両方を対象に答えてください。
+タスクも習慣もない場合でも、ユーザーの質問や雑談には気軽に応じてください。
+
+## タスク完了機能
+ユーザーがタスクの完了を報告した場合（「〇〇終わった」「〇〇完了」「〇〇やった」など）、\
+タスク一覧から該当するタスクを特定し、応答の末尾に以下のマーカーを付けてください:
+**DONE:タスク名**
+
+タスク名はタスク一覧に記載されている正確なタスク名を使ってください。
+
+## 習慣チェックイン機能
+ユーザーが習慣の実施を報告した場合も同様に、習慣一覧から特定し:
+**HABIT:習慣名**
+
+例: ユーザー「ダンベルやったよ」→ 習慣一覧に「ダンベル運動」がある場合
+応答:「(一言添える)」
+**HABIT:ダンベル運動**
+
+習慣名は習慣一覧に記載されている正確な名前を使ってください。
+該当が特定できない場合はマーカーを付けず、どれか確認してください。
+タスクと習慣の両方に該当する場合は両方のマーカーを付けてください。
 """
 
 
 NOTIFICATION_PROMPT = """\
 あなたは生活支援botです。
-以下のタスク一覧をSlackチャンネルに投稿するためのメッセージを作成してください。
+以下のルールでタスク一覧をユーザーに知らせてください。
+Slackチャンネルに投稿されるため書式に注意してください。
 
 ルール:
 - Slack mrkdwn形式で書式を付けてください（*太字*、:emoji: など）
+- １行目は「定期タスク通知(MM/dd HH:mm)」で始めてください
 - カテゴリごとにまとめて、見やすく整理してください
 - 時間帯に合わせた一言を添えてください（朝なら「おはよう」、夜なら「お疲れさま」など）
+- 今日完了したタスクがあれば、盛り上げて褒めてください！達成感を感じられるように
+- 習慣があれば、今日やるべき習慣としてリマインドしてください
 - タスクがなければ「タスクなし」で一言添えてください
 - 日本語で、カジュアルな口調で
 """
 
 
-def generate_nudge(user_message: str, tasks_context: str) -> str:
+def generate_nudge(user_message: str, tasks_context: str,
+                    on_progress=None) -> str:
     """Claude CLIを呼び出してナッジ応答を生成.
 
     Args:
         user_message: ユーザーの入力テキスト
         tasks_context: 現在のタスク一覧（テキスト形式）
+        on_progress: コールバック on_progress(elapsed_sec) — 処理中に定期呼び出し
 
     Returns:
         AIからの応答テキスト
@@ -76,7 +91,7 @@ def generate_nudge(user_message: str, tasks_context: str) -> str:
 """
 
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             [
                 "claude",
                 "--print",
@@ -84,23 +99,30 @@ def generate_nudge(user_message: str, tasks_context: str) -> str:
                 "--system-prompt", SYSTEM_PROMPT,
                 "--allowedTools", "WebSearch", "WebFetch",
             ],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=120,
         )
 
-        if result.returncode != 0:
-            logger.error("Claude CLI error: %s", result.stderr)
+        start = time.monotonic()
+        while proc.poll() is None:
+            time.sleep(5)
+            elapsed = int(time.monotonic() - start)
+            if on_progress and elapsed >= 10:
+                on_progress(elapsed)
+
+        stdout = proc.stdout.read()
+        stderr = proc.stderr.read()
+
+        if proc.returncode != 0:
+            logger.error("Claude CLI error: %s", stderr)
             return "うまく考えがまとまらなかった… もう一回話してみて！"
 
-        return _markdown_to_slack_mrkdwn(result.stdout.strip())
+        return stdout.strip()
 
     except FileNotFoundError:
         logger.error("Claude CLI not found. Is it installed?")
         return "AI機能が使えない状態です。管理者に連絡してください。"
-    except subprocess.TimeoutExpired:
-        logger.error("Claude CLI timed out")
-        return "考えるのに時間がかかりすぎちゃった :hourglass: もう一度試してね。"
 
 
 def generate_notification(tasks_context: str) -> str:
@@ -125,14 +147,14 @@ def generate_notification(tasks_context: str) -> str:
             ],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=120,
         )
 
         if result.returncode != 0:
             logger.error("Claude CLI error: %s", result.stderr)
             return None
 
-        return _markdown_to_slack_mrkdwn(result.stdout.strip())
+        return result.stdout.strip()
 
     except (FileNotFoundError, subprocess.TimeoutExpired):
         logger.exception("Claude CLI failed for notification")

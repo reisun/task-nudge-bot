@@ -3,12 +3,14 @@
 import logging
 import os
 import re
+import threading
 
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from src.nudge.nudge import generate_nudge, generate_notification
 from src.ticktick.client import TickTickClient
+from src.ticktick.habits import get_habits, checkin_habit
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,9 @@ _NOTIFY_ORDER = ["overdue", "today", "week"]
 _CONTEXT_ORDER = ["overdue", "today", "week", "no_date"]
 
 
-def post_tasks(categorized: dict[str, list[dict]]) -> str | None:
+def post_tasks(categorized: dict[str, list[dict]],
+               completed: list[dict] | None = None,
+               habits: list[dict] | None = None) -> str | None:
     """カテゴリ別タスク一覧をClaudeで整形してSlackチャンネルに投稿."""
     global _categorized_tasks, _all_tasks
     _categorized_tasks = categorized
@@ -43,6 +47,13 @@ def post_tasks(categorized: dict[str, list[dict]]) -> str | None:
 
     # Claudeに整形させる
     tasks_context = _format_categorized(categorized, _NOTIFY_ORDER)
+    if completed:
+        completed_lines = "\n\n【今日完了したタスク】"
+        for t in completed:
+            completed_lines += f"\n• {t.get('title', '(no title)')}"
+        tasks_context += completed_lines
+    if habits:
+        tasks_context += _format_habits(habits)
     claude_text = generate_notification(tasks_context)
 
     if claude_text:
@@ -86,38 +97,78 @@ def handle_message(event: dict, say) -> None:
 
     # --- スレッド返信 ---
     if thread_ts and thread_ts in _bot_message_timestamps:
-        # 「完了」パターンの検出
-        if _handle_completion(user_text, thread_ts, say):
-            return
-
-        # リアクションで処理開始を通知
-        _add_reaction(channel, msg_ts, THINKING_EMOJI)
-        tasks_context = _format_tasks_context()
-        try:
-            reply = generate_nudge(user_text, tasks_context)
-        except Exception:
-            logger.exception("AI nudge generation failed")
-            reply = "ちょっとエラーが起きちゃった :sweat_smile: もう一度試してみて！"
-
-        _remove_reaction(channel, msg_ts, THINKING_EMOJI)
-        say(text=reply, thread_ts=thread_ts)
+        threading.Thread(
+            target=_respond_with_progress,
+            args=(channel, thread_ts, user_text),
+            daemon=True,
+        ).start()
         return
 
     # --- チャンネルへの直接メッセージ ---
     if thread_ts:
         return  # bot以外のスレッドには反応しない
 
-    # リアクションで処理開始を通知
-    _add_reaction(channel, msg_ts, THINKING_EMOJI)
+    threading.Thread(
+        target=_respond_with_progress,
+        args=(channel, None, user_text),
+        daemon=True,
+    ).start()
+
+
+def _respond_with_progress(channel: str, thread_ts: str | None, user_text: str):
+    """バックグラウンドでClaude応答を生成し、進捗をメッセージ編集で表示."""
+    # 仮メッセージを投稿
+    kwargs = {"channel": channel, "text": ":thinking_face: 考え中..."}
+    if thread_ts:
+        kwargs["thread_ts"] = thread_ts
+    resp = app.client.chat_postMessage(**kwargs)
+    status_ts = resp.get("ts", "")
+
+    def on_progress(elapsed_sec: int):
+        elapsed_min = elapsed_sec // 60
+        elapsed_remaining = elapsed_sec % 60
+        if elapsed_min > 0:
+            time_str = f"{elapsed_min}分{elapsed_remaining}秒"
+        else:
+            time_str = f"{elapsed_sec}秒"
+        try:
+            app.client.chat_update(
+                channel=channel, ts=status_ts,
+                text=f":thinking_face: 考え中... ({time_str}経過)",
+            )
+        except Exception:
+            logger.warning("Failed to update progress message", exc_info=True)
+
     tasks_context = _format_tasks_context()
     try:
-        reply = generate_nudge(user_text, tasks_context)
+        reply = generate_nudge(user_text, tasks_context, on_progress=on_progress)
     except Exception:
         logger.exception("AI nudge generation failed")
         reply = "ちょっとエラーが起きちゃった :sweat_smile: もう一度試してみて！"
 
-    _remove_reaction(channel, msg_ts, THINKING_EMOJI)
-    say(text=reply)
+    # **DONE:タスク名** マーカーを検出して完了処理
+    done_match = re.search(r"\*\*DONE:(.+?)\*\*", reply)
+    if done_match:
+        task_title = done_match.group(1).strip()
+        reply = re.sub(r"\s*\*\*DONE:.+?\*\*", "", reply).strip()
+        _process_completion(task_title, channel, thread_ts)
+
+    # **HABIT:習慣名** マーカーを検出してチェックイン
+    habit_match = re.search(r"\*\*HABIT:(.+?)\*\*", reply)
+    if habit_match:
+        habit_name = habit_match.group(1).strip()
+        reply = re.sub(r"\s*\*\*HABIT:.+?\*\*", "", reply).strip()
+        result = checkin_habit(habit_name)
+        if result:
+            logger.info("Checked in habit: %s", result)
+        else:
+            logger.warning("Failed to checkin habit: %s", habit_name)
+
+    # 仮メッセージを最終応答に置き換え
+    try:
+        app.client.chat_update(channel=channel, ts=status_ts, text=reply)
+    except Exception:
+        logger.exception("Failed to update final message")
 
 
 def _add_reaction(channel: str, timestamp: str, emoji: str) -> None:
@@ -136,38 +187,27 @@ def _remove_reaction(channel: str, timestamp: str, emoji: str) -> None:
         logger.warning("Failed to remove reaction :%s:", emoji, exc_info=True)
 
 
-def _handle_completion(user_text: str, thread_ts: str, say) -> bool:
-    """「完了」メッセージを処理. 処理した場合Trueを返す."""
-    # 「完了」「完了 タスク名」パターンを検出
-    match = re.match(r"^完了\s*(.*)", user_text.strip())
-    if not match:
-        return False
-
-    task_hint = match.group(1).strip()
+def _process_completion(task_title: str, channel: str, thread_ts: str | None):
+    """Claudeが特定したタスク名でTickTickのタスクを完了にする."""
+    global _all_tasks, _categorized_tasks
+    _refresh_tasks()
     if not ticktick_client or not _all_tasks:
-        say(text="タスク情報がまだ読み込まれていません。", thread_ts=thread_ts)
-        return True
+        logger.warning("Cannot complete task: no tasks loaded")
+        return
 
-    # タスクを特定（名前の部分一致 or 番号指定）
-    target = _find_task(task_hint)
+    target = _find_task(task_title)
     if not target:
-        say(
-            text=f"「{task_hint}」に該当するタスクが見つかりませんでした。タスク名の一部を入れてみてください。",
-            thread_ts=thread_ts,
-        )
-        return True
+        logger.warning("Task not found for completion: %s", task_title)
+        return
 
     try:
         ticktick_client.complete_task(target["_project_id"], target["id"])
-        say(
-            text=f":white_check_mark: *{target['title']}* を完了にしました！お疲れさま！",
-            thread_ts=thread_ts,
-        )
+        logger.info("Completed task: %s", target["title"])
+        # タスクキャッシュをクリアして次回再取得
+        _all_tasks = []
+        _categorized_tasks = {}
     except Exception:
-        logger.exception("Failed to complete task")
-        say(text="タスクの完了処理でエラーが発生しました :bow:", thread_ts=thread_ts)
-
-    return True
+        logger.exception("Failed to complete task: %s", task_title)
 
 
 def _find_task(hint: str) -> dict | None:
@@ -229,8 +269,38 @@ def _format_tasks_context() -> str:
     """カテゴリ別タスクリストを文字列化（Claude向け会話コンテキスト）."""
     _refresh_tasks()
     if not _all_tasks:
-        return "タスクはありません。"
-    return _format_categorized(_categorized_tasks, _CONTEXT_ORDER)
+        context = "タスクはありません。"
+    else:
+        context = _format_categorized(_categorized_tasks, _CONTEXT_ORDER)
+
+    # 今日の完了タスクも追加
+    if ticktick_client:
+        try:
+            completed = ticktick_client.get_todays_completed_tasks()
+            if completed:
+                context += "\n\n【今日完了したタスク】"
+                for t in completed:
+                    context += f"\n• {t.get('title', '(no title)')}"
+        except Exception:
+            logger.warning("Failed to fetch completed tasks for context", exc_info=True)
+
+    # 習慣情報も追加
+    try:
+        habits = get_habits()
+        if habits:
+            context += _format_habits(habits)
+    except Exception:
+        logger.warning("Failed to fetch habits for context", exc_info=True)
+
+    return context
+
+
+def _format_habits(habits: list[dict]) -> str:
+    """習慣リストを文字列化."""
+    lines = ["\n\n【習慣】"]
+    for h in habits:
+        lines.append(f"• {h.get('name', '(no name)')}")
+    return "\n".join(lines)
 
 
 def start_socket_mode() -> SocketModeHandler:

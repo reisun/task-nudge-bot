@@ -4,8 +4,28 @@ import json
 import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
+
+JST = ZoneInfo("Asia/Tokyo")
+
+
+def _parse_due_date_jst(due_str: str) -> date:
+    """TickTickのdueDate文字列をJSTの日付に変換.
+
+    TickTickは "2026-04-10T15:00:00.000+0000" のようなUTC形式を返す。
+    これをJSTに変換して日付部分を返す。
+    """
+    try:
+        # ISO形式パース（+0000 → +00:00 に正規化）
+        normalized = due_str.replace("+0000", "+00:00").replace("-0000", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        return dt.astimezone(JST).date()
+    except (ValueError, TypeError):
+        # フォールバック: 先頭10文字を日付として扱う
+        return date.fromisoformat(due_str[:10])
+
 
 BASE_URL = "https://api.ticktick.com/open/v1"
 TOKEN_URL = "https://ticktick.com/oauth/token"
@@ -71,11 +91,16 @@ class TickTickClient:
     # ------------------------------------------------------------------
 
     def _get(self, path: str) -> dict | list:
-        """GET request with auto-retry on 401 (token refresh)."""
-        resp = httpx.get(f"{BASE_URL}{path}", headers=self._headers())
+        """GET request with auto-retry on 401 (token refresh) and timeout retry."""
+        timeout = httpx.Timeout(30.0, connect=10.0)
+        try:
+            resp = httpx.get(f"{BASE_URL}{path}", headers=self._headers(), timeout=timeout)
+        except httpx.ConnectTimeout:
+            # リトライ1回
+            resp = httpx.get(f"{BASE_URL}{path}", headers=self._headers(), timeout=timeout)
         if resp.status_code == 401:
             self.refresh_token()
-            resp = httpx.get(f"{BASE_URL}{path}", headers=self._headers())
+            resp = httpx.get(f"{BASE_URL}{path}", headers=self._headers(), timeout=timeout)
         resp.raise_for_status()
         return resp.json()
 
@@ -116,7 +141,7 @@ class TickTickClient:
           no_date  — 期限未設定
           future   — 来週以降
         """
-        today = date.today()
+        today = datetime.now(JST).date()
         week_end = today + timedelta(days=(6 - today.weekday()))  # 今週の日曜
 
         categories: dict[str, list[dict]] = {
@@ -132,7 +157,8 @@ class TickTickClient:
             if not due:
                 categories["no_date"].append(task)
                 continue
-            due_date = date.fromisoformat(due[:10])
+            # TickTickのdueDateはUTC ISO形式 → JSTに変換して日付を取得
+            due_date = _parse_due_date_jst(due)
             if due_date < today:
                 categories["overdue"].append(task)
             elif due_date == today:
@@ -144,16 +170,52 @@ class TickTickClient:
 
         return categories
 
-    def complete_task(self, project_id: str, task_id: str) -> None:
-        """タスクを完了にする."""
+    def get_todays_completed_tasks(self) -> list[dict]:
+        """今日完了したタスクを取得."""
+        today_jst = datetime.now(JST).replace(hour=0, minute=0, second=0, microsecond=0)
+        tomorrow_jst = today_jst + timedelta(days=1)
+        # TickTick APIはUTC形式を期待
+        from_str = today_jst.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S+0000")
+        to_str = tomorrow_jst.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S+0000")
+
+        timeout = httpx.Timeout(30.0, connect=10.0)
         resp = httpx.post(
-            f"{BASE_URL}/task/{task_id}/complete",
+            f"{BASE_URL}/task/completed",
             headers=self._headers(),
+            json={"from": from_str, "to": to_str},
+            timeout=timeout,
         )
         if resp.status_code == 401:
             self.refresh_token()
             resp = httpx.post(
-                f"{BASE_URL}/task/{task_id}/complete",
+                f"{BASE_URL}/task/completed",
                 headers=self._headers(),
+                json={"from": from_str, "to": to_str},
+                timeout=timeout,
+            )
+        resp.raise_for_status()
+        tasks = resp.json() if isinstance(resp.json(), list) else []
+
+        # APIのfrom/toが効かない場合があるため、クライアント側でフィルタ
+        today_str = today_jst.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%d")
+        return [
+            t for t in tasks
+            if (t.get("completedTime") or "")[:10] >= today_str
+        ]
+
+    def complete_task(self, project_id: str, task_id: str) -> None:
+        """タスクを完了にする."""
+        timeout = httpx.Timeout(30.0, connect=10.0)
+        resp = httpx.post(
+            f"{BASE_URL}/project/{project_id}/task/{task_id}/complete",
+            headers=self._headers(),
+            timeout=timeout,
+        )
+        if resp.status_code == 401:
+            self.refresh_token()
+            resp = httpx.post(
+                f"{BASE_URL}/project/{project_id}/task/{task_id}/complete",
+                headers=self._headers(),
+                timeout=timeout,
             )
         resp.raise_for_status()
