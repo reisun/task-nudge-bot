@@ -7,6 +7,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from src.slack_bot.bot import post_tasks
 from src.ticktick.client import TickTickClient
+from src.ticktick.habits import get_habits
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +17,13 @@ def _notify_job(ticktick: TickTickClient) -> None:
     try:
         categorized = ticktick.get_categorized_tasks()
         completed = ticktick.get_todays_completed_tasks()
+        habits = get_habits()
         total = sum(len(v) for v in categorized.values())
-        logger.info("Fetched %d tasks (overdue=%d, today=%d, week=%d, no_date=%d, future=%d), completed=%d",
+        logger.info("Fetched %d tasks (overdue=%d, today=%d, week=%d, no_date=%d, future=%d), completed=%d, habits=%d",
                      total, len(categorized["overdue"]), len(categorized["today"]),
                      len(categorized["week"]), len(categorized["no_date"]),
-                     len(categorized["future"]), len(completed))
-        post_tasks(categorized, completed)
+                     len(categorized["future"]), len(completed), len(habits))
+        post_tasks(categorized, completed, habits)
     except Exception:
         logger.exception("Daily notification job failed")
 

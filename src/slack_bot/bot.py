@@ -10,6 +10,7 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from src.nudge.nudge import generate_nudge, generate_notification
 from src.ticktick.client import TickTickClient
+from src.ticktick.habits import get_habits
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,8 @@ _CONTEXT_ORDER = ["overdue", "today", "week", "no_date"]
 
 
 def post_tasks(categorized: dict[str, list[dict]],
-               completed: list[dict] | None = None) -> str | None:
+               completed: list[dict] | None = None,
+               habits: list[dict] | None = None) -> str | None:
     """カテゴリ別タスク一覧をClaudeで整形してSlackチャンネルに投稿."""
     global _categorized_tasks, _all_tasks
     _categorized_tasks = categorized
@@ -50,6 +52,8 @@ def post_tasks(categorized: dict[str, list[dict]],
         for t in completed:
             completed_lines += f"\n• {t.get('title', '(no title)')}"
         tasks_context += completed_lines
+    if habits:
+        tasks_context += _format_habits(habits)
     claude_text = generate_notification(tasks_context)
 
     if claude_text:
@@ -270,7 +274,23 @@ def _format_tasks_context() -> str:
         except Exception:
             logger.warning("Failed to fetch completed tasks for context", exc_info=True)
 
+    # 習慣情報も追加
+    try:
+        habits = get_habits()
+        if habits:
+            context += _format_habits(habits)
+    except Exception:
+        logger.warning("Failed to fetch habits for context", exc_info=True)
+
     return context
+
+
+def _format_habits(habits: list[dict]) -> str:
+    """習慣リストを文字列化."""
+    lines = ["\n\n【習慣】"]
+    for h in habits:
+        lines.append(f"• {h.get('name', '(no name)')}")
+    return "\n".join(lines)
 
 
 def start_socket_mode() -> SocketModeHandler:
