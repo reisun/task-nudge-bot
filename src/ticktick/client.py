@@ -4,8 +4,28 @@ import json
 import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
+
+JST = ZoneInfo("Asia/Tokyo")
+
+
+def _parse_due_date_jst(due_str: str) -> date:
+    """TickTickのdueDate文字列をJSTの日付に変換.
+
+    TickTickは "2026-04-10T15:00:00.000+0000" のようなUTC形式を返す。
+    これをJSTに変換して日付部分を返す。
+    """
+    try:
+        # ISO形式パース（+0000 → +00:00 に正規化）
+        normalized = due_str.replace("+0000", "+00:00").replace("-0000", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        return dt.astimezone(JST).date()
+    except (ValueError, TypeError):
+        # フォールバック: 先頭10文字を日付として扱う
+        return date.fromisoformat(due_str[:10])
+
 
 BASE_URL = "https://api.ticktick.com/open/v1"
 TOKEN_URL = "https://ticktick.com/oauth/token"
@@ -71,11 +91,16 @@ class TickTickClient:
     # ------------------------------------------------------------------
 
     def _get(self, path: str) -> dict | list:
-        """GET request with auto-retry on 401 (token refresh)."""
-        resp = httpx.get(f"{BASE_URL}{path}", headers=self._headers())
+        """GET request with auto-retry on 401 (token refresh) and timeout retry."""
+        timeout = httpx.Timeout(30.0, connect=10.0)
+        try:
+            resp = httpx.get(f"{BASE_URL}{path}", headers=self._headers(), timeout=timeout)
+        except httpx.ConnectTimeout:
+            # リトライ1回
+            resp = httpx.get(f"{BASE_URL}{path}", headers=self._headers(), timeout=timeout)
         if resp.status_code == 401:
             self.refresh_token()
-            resp = httpx.get(f"{BASE_URL}{path}", headers=self._headers())
+            resp = httpx.get(f"{BASE_URL}{path}", headers=self._headers(), timeout=timeout)
         resp.raise_for_status()
         return resp.json()
 
@@ -116,7 +141,7 @@ class TickTickClient:
           no_date  — 期限未設定
           future   — 来週以降
         """
-        today = date.today()
+        today = datetime.now(JST).date()
         week_end = today + timedelta(days=(6 - today.weekday()))  # 今週の日曜
 
         categories: dict[str, list[dict]] = {
@@ -132,7 +157,8 @@ class TickTickClient:
             if not due:
                 categories["no_date"].append(task)
                 continue
-            due_date = date.fromisoformat(due[:10])
+            # TickTickのdueDateはUTC ISO形式 → JSTに変換して日付を取得
+            due_date = _parse_due_date_jst(due)
             if due_date < today:
                 categories["overdue"].append(task)
             elif due_date == today:
