@@ -2,7 +2,7 @@
 
 import json
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -106,11 +106,43 @@ class TickTickClient:
 
         return tasks
 
-    def get_todays_tasks(self) -> list[dict]:
-        """今日が期限のタスクを全プロジェクトから取得."""
-        today = date.today().isoformat()  # "YYYY-MM-DD"
-        all_tasks = self.get_all_tasks()
-        return [t for t in all_tasks if (t.get("dueDate") or "")[:10] == today]
+    def get_categorized_tasks(self) -> dict[str, list[dict]]:
+        """未完了タスクを日付カテゴリ別に分類して返す.
+
+        カテゴリ:
+          overdue  — 期限切れ
+          today    — 今日が期限
+          week     — 今週中（明日〜週末）
+          no_date  — 期限未設定
+          future   — 来週以降
+        """
+        today = date.today()
+        week_end = today + timedelta(days=(6 - today.weekday()))  # 今週の日曜
+
+        categories: dict[str, list[dict]] = {
+            "overdue": [],
+            "today": [],
+            "week": [],
+            "no_date": [],
+            "future": [],
+        }
+
+        for task in self.get_all_tasks():
+            due = task.get("dueDate", "")
+            if not due:
+                categories["no_date"].append(task)
+                continue
+            due_date = date.fromisoformat(due[:10])
+            if due_date < today:
+                categories["overdue"].append(task)
+            elif due_date == today:
+                categories["today"].append(task)
+            elif due_date <= week_end:
+                categories["week"].append(task)
+            else:
+                categories["future"].append(task)
+
+        return categories
 
     def complete_task(self, project_id: str, task_id: str) -> None:
         """タスクを完了にする."""
