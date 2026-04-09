@@ -93,10 +93,6 @@ def handle_message(event: dict, say) -> None:
 
     # --- スレッド返信 ---
     if thread_ts and thread_ts in _bot_message_timestamps:
-        # 「完了」パターンの検出
-        if _handle_completion(user_text, thread_ts, say):
-            return
-
         threading.Thread(
             target=_respond_with_progress,
             args=(channel, thread_ts, user_text),
@@ -146,6 +142,14 @@ def _respond_with_progress(channel: str, thread_ts: str | None, user_text: str):
         logger.exception("AI nudge generation failed")
         reply = "ちょっとエラーが起きちゃった :sweat_smile: もう一度試してみて！"
 
+    # **DONE:タスク名** マーカーを検出して完了処理
+    done_match = re.search(r"\*\*DONE:(.+?)\*\*", reply)
+    if done_match:
+        task_title = done_match.group(1).strip()
+        # マーカーを応答から除去
+        reply = re.sub(r"\s*\*\*DONE:.+?\*\*", "", reply).strip()
+        _process_completion(task_title, channel, thread_ts)
+
     # 仮メッセージを最終応答に置き換え
     try:
         app.client.chat_update(channel=channel, ts=status_ts, text=reply)
@@ -169,38 +173,27 @@ def _remove_reaction(channel: str, timestamp: str, emoji: str) -> None:
         logger.warning("Failed to remove reaction :%s:", emoji, exc_info=True)
 
 
-def _handle_completion(user_text: str, thread_ts: str, say) -> bool:
-    """「完了」メッセージを処理. 処理した場合Trueを返す."""
-    # 「完了」「完了 タスク名」パターンを検出
-    match = re.match(r"^完了\s*(.*)", user_text.strip())
-    if not match:
-        return False
-
-    task_hint = match.group(1).strip()
+def _process_completion(task_title: str, channel: str, thread_ts: str | None):
+    """Claudeが特定したタスク名でTickTickのタスクを完了にする."""
+    _refresh_tasks()
     if not ticktick_client or not _all_tasks:
-        say(text="タスク情報がまだ読み込まれていません。", thread_ts=thread_ts)
-        return True
+        logger.warning("Cannot complete task: no tasks loaded")
+        return
 
-    # タスクを特定（名前の部分一致 or 番号指定）
-    target = _find_task(task_hint)
+    target = _find_task(task_title)
     if not target:
-        say(
-            text=f"「{task_hint}」に該当するタスクが見つかりませんでした。タスク名の一部を入れてみてください。",
-            thread_ts=thread_ts,
-        )
-        return True
+        logger.warning("Task not found for completion: %s", task_title)
+        return
 
     try:
         ticktick_client.complete_task(target["_project_id"], target["id"])
-        say(
-            text=f":white_check_mark: *{target['title']}* を完了にしました！お疲れさま！",
-            thread_ts=thread_ts,
-        )
+        logger.info("Completed task: %s", target["title"])
+        # タスクキャッシュをクリアして次回再取得
+        global _all_tasks, _categorized_tasks
+        _all_tasks = []
+        _categorized_tasks = {}
     except Exception:
-        logger.exception("Failed to complete task")
-        say(text="タスクの完了処理でエラーが発生しました :bow:", thread_ts=thread_ts)
-
-    return True
+        logger.exception("Failed to complete task: %s", task_title)
 
 
 def _find_task(hint: str) -> dict | None:
