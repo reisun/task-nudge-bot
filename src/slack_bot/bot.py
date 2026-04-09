@@ -262,8 +262,22 @@ def _format_tasks_context() -> str:
     """カテゴリ別タスクリストを文字列化（Claude向け会話コンテキスト）."""
     _refresh_tasks()
     if not _all_tasks:
-        return "タスクはありません。"
-    return _format_categorized(_categorized_tasks, _CONTEXT_ORDER)
+        context = "タスクはありません。"
+    else:
+        context = _format_categorized(_categorized_tasks, _CONTEXT_ORDER)
+
+    # 今日の完了タスクも追加
+    if ticktick_client:
+        try:
+            completed = ticktick_client.get_todays_completed_tasks()
+            if completed:
+                context += "\n\n【今日完了したタスク】"
+                for t in completed:
+                    context += f"\n• {t.get('title', '(no title)')}"
+        except Exception:
+            logger.warning("Failed to fetch completed tasks for context", exc_info=True)
+
+    return context
 
 
 def start_socket_mode() -> SocketModeHandler:
