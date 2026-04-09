@@ -194,7 +194,14 @@ class TickTickClient:
                 timeout=timeout,
             )
         resp.raise_for_status()
-        return resp.json() if isinstance(resp.json(), list) else []
+        tasks = resp.json() if isinstance(resp.json(), list) else []
+
+        # APIのfrom/toが効かない場合があるため、クライアント側でフィルタ
+        today_str = today_jst.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%d")
+        return [
+            t for t in tasks
+            if (t.get("completedTime") or "")[:10] >= today_str
+        ]
 
     def complete_task(self, project_id: str, task_id: str) -> None:
         """タスクを完了にする."""
