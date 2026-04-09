@@ -10,7 +10,7 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from src.nudge.nudge import generate_nudge, generate_notification
 from src.ticktick.client import TickTickClient
-from src.ticktick.habits import get_habits
+from src.ticktick.habits import get_habits, checkin_habit
 
 logger = logging.getLogger(__name__)
 
@@ -150,9 +150,19 @@ def _respond_with_progress(channel: str, thread_ts: str | None, user_text: str):
     done_match = re.search(r"\*\*DONE:(.+?)\*\*", reply)
     if done_match:
         task_title = done_match.group(1).strip()
-        # マーカーを応答から除去
         reply = re.sub(r"\s*\*\*DONE:.+?\*\*", "", reply).strip()
         _process_completion(task_title, channel, thread_ts)
+
+    # **HABIT:習慣名** マーカーを検出してチェックイン
+    habit_match = re.search(r"\*\*HABIT:(.+?)\*\*", reply)
+    if habit_match:
+        habit_name = habit_match.group(1).strip()
+        reply = re.sub(r"\s*\*\*HABIT:.+?\*\*", "", reply).strip()
+        result = checkin_habit(habit_name)
+        if result:
+            logger.info("Checked in habit: %s", result)
+        else:
+            logger.warning("Failed to checkin habit: %s", habit_name)
 
     # 仮メッセージを最終応答に置き換え
     try:
