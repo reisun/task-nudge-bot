@@ -1,0 +1,14 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      - TOKEN_FILE=/data/.tokens.json
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - bot-data:/data
+      - ${HOME}/.claude:/mnt/claude:ro
+    restart: unless-stopped
+
+volumes:
+  bot-data:

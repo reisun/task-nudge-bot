@@ -1,4 +1,10 @@
 __pycache__/
 *.py[cod]
+*.pyo
 .env
 .venv/
+.tokens.json
+*.egg-info/
+dist/
+build/
+node_modules/
