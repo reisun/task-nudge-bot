@@ -39,6 +39,19 @@ SYSTEM_PROMPT = """\
 """
 
 
+NOTIFICATION_PROMPT = """\
+あなたは生活支援botです。
+以下のタスク一覧をSlackチャンネルに投稿するためのメッセージを作成してください。
+
+ルール:
+- Slack mrkdwn形式で書式を付けてください（*太字*、:emoji: など）
+- カテゴリごとにまとめて、見やすく整理してください
+- 時間帯に合わせた一言を添えてください（朝なら「おはよう」、夜なら「お疲れさま」など）
+- タスクがなければ「タスクなし」で一言添えてください
+- 日本語で、カジュアルな口調で
+"""
+
+
 def generate_nudge(user_message: str, tasks_context: str) -> str:
     """Claude CLIを呼び出してナッジ応答を生成.
 
@@ -87,3 +100,39 @@ def generate_nudge(user_message: str, tasks_context: str) -> str:
     except subprocess.TimeoutExpired:
         logger.error("Claude CLI timed out")
         return "考えるのに時間がかかりすぎちゃった :hourglass: もう一度試してね。"
+
+
+def generate_notification(tasks_context: str) -> str:
+    """定時通知用のメッセージをClaudeに生成させる."""
+    now = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M")
+
+    prompt = f"""\
+## 現在時刻（日本時間）
+{now}
+
+## タスク一覧
+{tasks_context}
+"""
+
+    try:
+        result = subprocess.run(
+            [
+                "claude",
+                "--print",
+                "-p", prompt,
+                "--system-prompt", NOTIFICATION_PROMPT,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        if result.returncode != 0:
+            logger.error("Claude CLI error: %s", result.stderr)
+            return None
+
+        return _markdown_to_slack_mrkdwn(result.stdout.strip())
+
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        logger.exception("Claude CLI failed for notification")
+        return None

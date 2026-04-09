@@ -7,7 +7,7 @@ import re
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-from src.nudge.nudge import generate_nudge
+from src.nudge.nudge import generate_nudge, generate_notification
 from src.ticktick.client import TickTickClient
 
 logger = logging.getLogger(__name__)
@@ -25,50 +25,36 @@ _all_tasks: list[dict] = []
 
 app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
 
-_CATEGORY_LABELS = {
-    "overdue": (":rotating_light: *期限切れ*", "overdue"),
-    "today": (":dart: *今日のタスク*", "today"),
-    "week": (":calendar: *今週のタスク*", "week"),
-    "no_date": (":inbox_tray: *期限未設定*", "no_date"),
-    "future": (":hourglass_flowing_sand: *来週以降*", "future"),
-}
-
-# 定時通知・Claude向けで表示するカテゴリ順
-_DISPLAY_ORDER = ["overdue", "today", "week", "no_date"]
-
-
-def _format_task_line(task: dict, idx: int) -> str:
-    project = task.get("_project_name", "")
-    title = task.get("title", "(no title)")
-    due = task.get("dueDate", "")
-    prefix = f"[{project}] " if project else ""
-    due_suffix = f" (期限: {due[:10]})" if due else ""
-    return f"{idx}. {prefix}{title}{due_suffix}"
+# 定時通知で表示するカテゴリ順（期限未設定は除外）
+_NOTIFY_ORDER = ["overdue", "today", "week"]
+# Claude向け会話コンテキストで表示するカテゴリ順
+_CONTEXT_ORDER = ["overdue", "today", "week", "no_date"]
 
 
 def post_tasks(categorized: dict[str, list[dict]]) -> str | None:
-    """カテゴリ別タスク一覧をSlackチャンネルに投稿. 投稿のtsを返す."""
+    """カテゴリ別タスク一覧をClaudeで整形してSlackチャンネルに投稿."""
     global _categorized_tasks, _all_tasks
     _categorized_tasks = categorized
-    _all_tasks = [t for cat in _DISPLAY_ORDER for t in categorized.get(cat, [])]
+    _all_tasks = [t for cat in _CONTEXT_ORDER for t in categorized.get(cat, [])]
     channel = os.environ["SLACK_CHANNEL_ID"]
 
-    if not _all_tasks:
-        text = "<!channel> タスクはありません :tada: ゆっくり休んでください！"
+    # 通知対象タスク（期限付きのみ）
+    notify_tasks = [t for cat in _NOTIFY_ORDER for t in categorized.get(cat, [])]
+
+    # Claudeに整形させる
+    tasks_context = _format_categorized(categorized, _NOTIFY_ORDER)
+    claude_text = generate_notification(tasks_context)
+
+    if claude_text:
+        text = f"<!channel>\n{claude_text}"
+    elif not notify_tasks:
+        text = "<!channel> 期限付きのタスクはありません :tada:"
     else:
-        lines = ["<!channel>\n"]
-        idx = 1
-        for cat_key in _DISPLAY_ORDER:
-            tasks = categorized.get(cat_key, [])
-            if not tasks:
-                continue
-            label, _ = _CATEGORY_LABELS[cat_key]
-            lines.append(f"{label}")
-            for task in tasks:
-                lines.append(_format_task_line(task, idx))
-                idx += 1
-            lines.append("")
-        lines.append("スレッドで話しかけてね！完了したら「完了 タスク名」と教えてください。")
+        # フォールバック: Claude失敗時は簡易表示
+        lines = ["<!channel> *タスク通知*\n"]
+        for t in notify_tasks:
+            due = t.get("dueDate", "")
+            lines.append(f"• {t.get('title', '(no title)')} (期限: {due[:10]})")
         text = "\n".join(lines)
 
     resp = app.client.chat_postMessage(channel=channel, text=text)
@@ -185,38 +171,41 @@ def _refresh_tasks() -> None:
     if ticktick_client and not _all_tasks:
         try:
             _categorized_tasks = ticktick_client.get_categorized_tasks()
-            _all_tasks = [t for cat in _DISPLAY_ORDER for t in _categorized_tasks.get(cat, [])]
+            _all_tasks = [t for cat in _CONTEXT_ORDER for t in _categorized_tasks.get(cat, [])]
             logger.info("Refreshed tasks: %d found", len(_all_tasks))
         except Exception:
             logger.exception("Failed to refresh tasks")
 
 
-def _format_tasks_context() -> str:
-    """カテゴリ別タスクリストを文字列化（Claude向け）."""
-    _refresh_tasks()
-    if not _all_tasks:
-        return "タスクはありません。"
-
+def _format_categorized(categorized: dict[str, list[dict]], order: list[str]) -> str:
+    """カテゴリ別タスクリストを文字列化."""
+    label_map = {
+        "overdue": "【期限切れ】",
+        "today": "【今日】",
+        "week": "【今週】",
+        "no_date": "【期限未設定】",
+    }
     lines = []
     idx = 1
-    for cat_key in _DISPLAY_ORDER:
-        tasks = _categorized_tasks.get(cat_key, [])
+    for cat_key in order:
+        tasks = categorized.get(cat_key, [])
         if not tasks:
             continue
-        label_map = {
-            "overdue": "【期限切れ】",
-            "today": "【今日】",
-            "week": "【今週】",
-            "no_date": "【期限未設定】",
-        }
         lines.append(f"\n{label_map[cat_key]}")
         for t in tasks:
             due = t.get("dueDate", "")
             due_suffix = f" (期限: {due[:10]})" if due else ""
             lines.append(f"{idx}. {t.get('title', '(no title)')}{due_suffix}")
             idx += 1
-
     return "\n".join(lines)
+
+
+def _format_tasks_context() -> str:
+    """カテゴリ別タスクリストを文字列化（Claude向け会話コンテキスト）."""
+    _refresh_tasks()
+    if not _all_tasks:
+        return "タスクはありません。"
+    return _format_categorized(_categorized_tasks, _CONTEXT_ORDER)
 
 
 def start_socket_mode() -> SocketModeHandler:
