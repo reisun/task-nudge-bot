@@ -7,7 +7,7 @@ services:
       - PYTHONUNBUFFERED=1
     volumes:
       - bot-data:/data
-      - ${HOME}/.claude:/mnt/claude:ro
+      - ${HOME}/.claude:/mnt/claude
     restart: unless-stopped
 
 volumes:
