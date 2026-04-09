@@ -198,14 +198,17 @@ class TickTickClient:
 
     def complete_task(self, project_id: str, task_id: str) -> None:
         """タスクを完了にする."""
+        timeout = httpx.Timeout(30.0, connect=10.0)
         resp = httpx.post(
-            f"{BASE_URL}/task/{task_id}/complete",
+            f"{BASE_URL}/project/{project_id}/task/{task_id}/complete",
             headers=self._headers(),
+            timeout=timeout,
         )
         if resp.status_code == 401:
             self.refresh_token()
             resp = httpx.post(
-                f"{BASE_URL}/task/{task_id}/complete",
+                f"{BASE_URL}/project/{project_id}/task/{task_id}/complete",
                 headers=self._headers(),
+                timeout=timeout,
             )
         resp.raise_for_status()
