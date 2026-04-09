@@ -175,6 +175,7 @@ def _remove_reaction(channel: str, timestamp: str, emoji: str) -> None:
 
 def _process_completion(task_title: str, channel: str, thread_ts: str | None):
     """Claudeが特定したタスク名でTickTickのタスクを完了にする."""
+    global _all_tasks, _categorized_tasks
     _refresh_tasks()
     if not ticktick_client or not _all_tasks:
         logger.warning("Cannot complete task: no tasks loaded")
@@ -189,7 +190,6 @@ def _process_completion(task_title: str, channel: str, thread_ts: str | None):
         ticktick_client.complete_task(target["_project_id"], target["id"])
         logger.info("Completed task: %s", target["title"])
         # タスクキャッシュをクリアして次回再取得
-        global _all_tasks, _categorized_tasks
         _all_tasks = []
         _categorized_tasks = {}
     except Exception:
