@@ -81,12 +81,17 @@ def handle_message(event: dict, say) -> None:
     user_text = event.get("text", "")
     thread_ts = event.get("thread_ts")
 
+    msg_ts = event.get("ts")
+    THINKING_EMOJI = "thinking_face"
+
     # --- スレッド返信 ---
     if thread_ts and thread_ts in _bot_message_timestamps:
         # 「完了」パターンの検出
         if _handle_completion(user_text, thread_ts, say):
             return
 
+        # リアクションで処理開始を通知
+        _add_reaction(channel, msg_ts, THINKING_EMOJI)
         tasks_context = _format_tasks_context()
         try:
             reply = generate_nudge(user_text, tasks_context)
@@ -94,6 +99,7 @@ def handle_message(event: dict, say) -> None:
             logger.exception("AI nudge generation failed")
             reply = "ちょっとエラーが起きちゃった :sweat_smile: もう一度試してみて！"
 
+        _remove_reaction(channel, msg_ts, THINKING_EMOJI)
         say(text=reply, thread_ts=thread_ts)
         return
 
@@ -101,6 +107,8 @@ def handle_message(event: dict, say) -> None:
     if thread_ts:
         return  # bot以外のスレッドには反応しない
 
+    # リアクションで処理開始を通知
+    _add_reaction(channel, msg_ts, THINKING_EMOJI)
     tasks_context = _format_tasks_context()
     try:
         reply = generate_nudge(user_text, tasks_context)
@@ -108,7 +116,24 @@ def handle_message(event: dict, say) -> None:
         logger.exception("AI nudge generation failed")
         reply = "ちょっとエラーが起きちゃった :sweat_smile: もう一度試してみて！"
 
+    _remove_reaction(channel, msg_ts, THINKING_EMOJI)
     say(text=reply)
+
+
+def _add_reaction(channel: str, timestamp: str, emoji: str) -> None:
+    """メッセージにリアクション絵文字を付与."""
+    try:
+        app.client.reactions_add(channel=channel, timestamp=timestamp, name=emoji)
+    except Exception:
+        logger.warning("Failed to add reaction :%s:", emoji, exc_info=True)
+
+
+def _remove_reaction(channel: str, timestamp: str, emoji: str) -> None:
+    """メッセージからリアクション絵文字を除去."""
+    try:
+        app.client.reactions_remove(channel=channel, timestamp=timestamp, name=emoji)
+    except Exception:
+        logger.warning("Failed to remove reaction :%s:", emoji, exc_info=True)
 
 
 def _handle_completion(user_text: str, thread_ts: str, say) -> bool:
