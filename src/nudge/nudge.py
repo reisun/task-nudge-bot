@@ -1,12 +1,26 @@
 """AI Nudge — Claude CLIでナッジ応答を生成."""
 
 import logging
+import re
 import subprocess
 from datetime import datetime
 
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+
+def _markdown_to_slack_mrkdwn(text: str) -> str:
+    """Markdown記法をSlack mrkdwn形式に変換."""
+    # **bold** → *bold*
+    text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
+    # __bold__ → *bold*
+    text = re.sub(r"__(.+?)__", r"*\1*", text)
+    # [text](url) → <url|text>
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"<\2|\1>", text)
+    # ### heading → *heading*
+    text = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", text, flags=re.MULTILINE)
+    return text
 
 SYSTEM_PROMPT = """\
 あなたは生活支援botです。
@@ -65,7 +79,7 @@ def generate_nudge(user_message: str, tasks_context: str) -> str:
             logger.error("Claude CLI error: %s", result.stderr)
             return "うまく考えがまとまらなかった… もう一回話してみて！"
 
-        return result.stdout.strip()
+        return _markdown_to_slack_mrkdwn(result.stdout.strip())
 
     except FileNotFoundError:
         logger.error("Claude CLI not found. Is it installed?")
