@@ -18,28 +18,57 @@ ticktick_client: TickTickClient | None = None
 # botが投稿したメッセージのtsを記録（スレッド判定用）
 _bot_message_timestamps: set[str] = set()
 
-# タスクコンテキスト（最新の投稿タスクを保持）
-_current_tasks: list[dict] = []
+# タスクコンテキスト（カテゴリ別）
+_categorized_tasks: dict[str, list[dict]] = {}
+# 全タスクのフラットリスト（完了・検索用）
+_all_tasks: list[dict] = []
 
 app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
 
+_CATEGORY_LABELS = {
+    "overdue": (":rotating_light: *期限切れ*", "overdue"),
+    "today": (":dart: *今日のタスク*", "today"),
+    "week": (":calendar: *今週のタスク*", "week"),
+    "no_date": (":inbox_tray: *期限未設定*", "no_date"),
+    "future": (":hourglass_flowing_sand: *来週以降*", "future"),
+}
 
-def post_tasks(tasks: list[dict]) -> str | None:
-    """タスク一覧をSlackチャンネルに投稿. 投稿のtsを返す."""
-    global _current_tasks
-    _current_tasks = tasks
+# 定時通知・Claude向けで表示するカテゴリ順
+_DISPLAY_ORDER = ["overdue", "today", "week", "no_date"]
+
+
+def _format_task_line(task: dict, idx: int) -> str:
+    project = task.get("_project_name", "")
+    title = task.get("title", "(no title)")
+    due = task.get("dueDate", "")
+    prefix = f"[{project}] " if project else ""
+    due_suffix = f" (期限: {due[:10]})" if due else ""
+    return f"{idx}. {prefix}{title}{due_suffix}"
+
+
+def post_tasks(categorized: dict[str, list[dict]]) -> str | None:
+    """カテゴリ別タスク一覧をSlackチャンネルに投稿. 投稿のtsを返す."""
+    global _categorized_tasks, _all_tasks
+    _categorized_tasks = categorized
+    _all_tasks = [t for cat in _DISPLAY_ORDER for t in categorized.get(cat, [])]
     channel = os.environ["SLACK_CHANNEL_ID"]
 
-    if not tasks:
+    if not _all_tasks:
         text = "<!channel> タスクはありません :tada: ゆっくり休んでください！"
     else:
-        lines = ["<!channel> *タスク一覧* :memo:\n"]
-        for i, task in enumerate(tasks, 1):
-            project = task.get("_project_name", "")
-            title = task.get("title", "(no title)")
-            prefix = f"[{project}] " if project else ""
-            lines.append(f"{i}. {prefix}{title}")
-        lines.append("\nスレッドで話しかけてね！完了したら「完了 タスク名」と教えてください。")
+        lines = ["<!channel>\n"]
+        idx = 1
+        for cat_key in _DISPLAY_ORDER:
+            tasks = categorized.get(cat_key, [])
+            if not tasks:
+                continue
+            label, _ = _CATEGORY_LABELS[cat_key]
+            lines.append(f"{label}")
+            for task in tasks:
+                lines.append(_format_task_line(task, idx))
+                idx += 1
+            lines.append("")
+        lines.append("スレッドで話しかけてね！完了したら「完了 タスク名」と教えてください。")
         text = "\n".join(lines)
 
     resp = app.client.chat_postMessage(channel=channel, text=text)
@@ -104,7 +133,7 @@ def _handle_completion(user_text: str, thread_ts: str, say) -> bool:
         return False
 
     task_hint = match.group(1).strip()
-    if not ticktick_client or not _current_tasks:
+    if not ticktick_client or not _all_tasks:
         say(text="タスク情報がまだ読み込まれていません。", thread_ts=thread_ts)
         return True
 
@@ -134,16 +163,16 @@ def _find_task(hint: str) -> dict | None:
     """ヒント文字列からタスクを検索."""
     if not hint:
         # ヒントなしで1つだけなら自動選択
-        return _current_tasks[0] if len(_current_tasks) == 1 else None
+        return _all_tasks[0] if len(_all_tasks) == 1 else None
 
     # 番号指定
     if hint.isdigit():
         idx = int(hint) - 1
-        if 0 <= idx < len(_current_tasks):
-            return _current_tasks[idx]
+        if 0 <= idx < len(_all_tasks):
+            return _all_tasks[idx]
 
     # 名前の部分一致
-    for task in _current_tasks:
+    for task in _all_tasks:
         if hint.lower() in task.get("title", "").lower():
             return task
 
@@ -152,23 +181,41 @@ def _find_task(hint: str) -> dict | None:
 
 def _refresh_tasks() -> None:
     """TickTickからタスクを再取得してキャッシュを更新."""
-    global _current_tasks
-    if ticktick_client and not _current_tasks:
+    global _categorized_tasks, _all_tasks
+    if ticktick_client and not _all_tasks:
         try:
-            _current_tasks = ticktick_client.get_all_tasks()
-            logger.info("Refreshed tasks: %d found", len(_current_tasks))
+            _categorized_tasks = ticktick_client.get_categorized_tasks()
+            _all_tasks = [t for cat in _DISPLAY_ORDER for t in _categorized_tasks.get(cat, [])]
+            logger.info("Refreshed tasks: %d found", len(_all_tasks))
         except Exception:
             logger.exception("Failed to refresh tasks")
 
 
 def _format_tasks_context() -> str:
-    """現在のタスクリストを文字列化."""
+    """カテゴリ別タスクリストを文字列化（Claude向け）."""
     _refresh_tasks()
-    if not _current_tasks:
+    if not _all_tasks:
         return "タスクはありません。"
+
     lines = []
-    for i, t in enumerate(_current_tasks, 1):
-        lines.append(f"{i}. {t.get('title', '(no title)')}")
+    idx = 1
+    for cat_key in _DISPLAY_ORDER:
+        tasks = _categorized_tasks.get(cat_key, [])
+        if not tasks:
+            continue
+        label_map = {
+            "overdue": "【期限切れ】",
+            "today": "【今日】",
+            "week": "【今週】",
+            "no_date": "【期限未設定】",
+        }
+        lines.append(f"\n{label_map[cat_key]}")
+        for t in tasks:
+            due = t.get("dueDate", "")
+            due_suffix = f" (期限: {due[:10]})" if due else ""
+            lines.append(f"{idx}. {t.get('title', '(no title)')}{due_suffix}")
+            idx += 1
+
     return "\n".join(lines)
 
 
