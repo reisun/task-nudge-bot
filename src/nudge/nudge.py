@@ -82,6 +82,7 @@ def generate_nudge(user_message: str, tasks_context: str) -> str:
                 "--print",
                 "-p", prompt,
                 "--system-prompt", SYSTEM_PROMPT,
+                "--allowedTools", "WebSearch", "WebFetch",
             ],
             capture_output=True,
             text=True,
