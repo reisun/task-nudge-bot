@@ -3,6 +3,7 @@
 import logging
 import os
 import re
+import threading
 
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
@@ -90,34 +91,60 @@ def handle_message(event: dict, say) -> None:
         if _handle_completion(user_text, thread_ts, say):
             return
 
-        # リアクションで処理開始を通知
-        _add_reaction(channel, msg_ts, THINKING_EMOJI)
-        tasks_context = _format_tasks_context()
-        try:
-            reply = generate_nudge(user_text, tasks_context)
-        except Exception:
-            logger.exception("AI nudge generation failed")
-            reply = "ちょっとエラーが起きちゃった :sweat_smile: もう一度試してみて！"
-
-        _remove_reaction(channel, msg_ts, THINKING_EMOJI)
-        say(text=reply, thread_ts=thread_ts)
+        threading.Thread(
+            target=_respond_with_progress,
+            args=(channel, thread_ts, user_text),
+            daemon=True,
+        ).start()
         return
 
     # --- チャンネルへの直接メッセージ ---
     if thread_ts:
         return  # bot以外のスレッドには反応しない
 
-    # リアクションで処理開始を通知
-    _add_reaction(channel, msg_ts, THINKING_EMOJI)
+    threading.Thread(
+        target=_respond_with_progress,
+        args=(channel, None, user_text),
+        daemon=True,
+    ).start()
+
+
+def _respond_with_progress(channel: str, thread_ts: str | None, user_text: str):
+    """バックグラウンドでClaude応答を生成し、進捗をメッセージ編集で表示."""
+    # 仮メッセージを投稿
+    kwargs = {"channel": channel, "text": ":thinking_face: 考え中..."}
+    if thread_ts:
+        kwargs["thread_ts"] = thread_ts
+    resp = app.client.chat_postMessage(**kwargs)
+    status_ts = resp.get("ts", "")
+
+    def on_progress(elapsed_sec: int):
+        elapsed_min = elapsed_sec // 60
+        elapsed_remaining = elapsed_sec % 60
+        if elapsed_min > 0:
+            time_str = f"{elapsed_min}分{elapsed_remaining}秒"
+        else:
+            time_str = f"{elapsed_sec}秒"
+        try:
+            app.client.chat_update(
+                channel=channel, ts=status_ts,
+                text=f":thinking_face: 考え中... ({time_str}経過)",
+            )
+        except Exception:
+            logger.warning("Failed to update progress message", exc_info=True)
+
     tasks_context = _format_tasks_context()
     try:
-        reply = generate_nudge(user_text, tasks_context)
+        reply = generate_nudge(user_text, tasks_context, on_progress=on_progress)
     except Exception:
         logger.exception("AI nudge generation failed")
         reply = "ちょっとエラーが起きちゃった :sweat_smile: もう一度試してみて！"
 
-    _remove_reaction(channel, msg_ts, THINKING_EMOJI)
-    say(text=reply)
+    # 仮メッセージを最終応答に置き換え
+    try:
+        app.client.chat_update(channel=channel, ts=status_ts, text=reply)
+    except Exception:
+        logger.exception("Failed to update final message")
 
 
 def _add_reaction(channel: str, timestamp: str, emoji: str) -> None:

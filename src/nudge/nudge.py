@@ -3,6 +3,8 @@
 import logging
 import re
 import subprocess
+import time
+import threading
 from datetime import datetime
 
 from zoneinfo import ZoneInfo
@@ -52,12 +54,14 @@ NOTIFICATION_PROMPT = """\
 """
 
 
-def generate_nudge(user_message: str, tasks_context: str) -> str:
+def generate_nudge(user_message: str, tasks_context: str,
+                    on_progress=None) -> str:
     """Claude CLIを呼び出してナッジ応答を生成.
 
     Args:
         user_message: ユーザーの入力テキスト
         tasks_context: 現在のタスク一覧（テキスト形式）
+        on_progress: コールバック on_progress(elapsed_sec) — 処理中に定期呼び出し
 
     Returns:
         AIからの応答テキスト
@@ -76,30 +80,38 @@ def generate_nudge(user_message: str, tasks_context: str) -> str:
 """
 
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             [
                 "claude",
                 "--print",
                 "-p", prompt,
                 "--system-prompt", SYSTEM_PROMPT,
+                "--allowedTools", "WebSearch", "WebFetch",
             ],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=120,
         )
 
-        if result.returncode != 0:
-            logger.error("Claude CLI error: %s", result.stderr)
+        start = time.monotonic()
+        while proc.poll() is None:
+            time.sleep(5)
+            elapsed = int(time.monotonic() - start)
+            if on_progress and elapsed >= 10:
+                on_progress(elapsed)
+
+        stdout = proc.stdout.read()
+        stderr = proc.stderr.read()
+
+        if proc.returncode != 0:
+            logger.error("Claude CLI error: %s", stderr)
             return "うまく考えがまとまらなかった… もう一回話してみて！"
 
-        return _markdown_to_slack_mrkdwn(result.stdout.strip())
+        return _markdown_to_slack_mrkdwn(stdout.strip())
 
     except FileNotFoundError:
         logger.error("Claude CLI not found. Is it installed?")
         return "AI機能が使えない状態です。管理者に連絡してください。"
-    except subprocess.TimeoutExpired:
-        logger.error("Claude CLI timed out")
-        return "考えるのに時間がかかりすぎちゃった :hourglass: もう一度試してね。"
 
 
 def generate_notification(tasks_context: str) -> str:
