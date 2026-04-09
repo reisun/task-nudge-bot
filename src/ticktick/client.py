@@ -170,6 +170,32 @@ class TickTickClient:
 
         return categories
 
+    def get_todays_completed_tasks(self) -> list[dict]:
+        """今日完了したタスクを取得."""
+        today_jst = datetime.now(JST).replace(hour=0, minute=0, second=0, microsecond=0)
+        tomorrow_jst = today_jst + timedelta(days=1)
+        # TickTick APIはUTC形式を期待
+        from_str = today_jst.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S+0000")
+        to_str = tomorrow_jst.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S+0000")
+
+        timeout = httpx.Timeout(30.0, connect=10.0)
+        resp = httpx.post(
+            f"{BASE_URL}/task/completed",
+            headers=self._headers(),
+            json={"from": from_str, "to": to_str},
+            timeout=timeout,
+        )
+        if resp.status_code == 401:
+            self.refresh_token()
+            resp = httpx.post(
+                f"{BASE_URL}/task/completed",
+                headers=self._headers(),
+                json={"from": from_str, "to": to_str},
+                timeout=timeout,
+            )
+        resp.raise_for_status()
+        return resp.json() if isinstance(resp.json(), list) else []
+
     def complete_task(self, project_id: str, task_id: str) -> None:
         """タスクを完了にする."""
         resp = httpx.post(

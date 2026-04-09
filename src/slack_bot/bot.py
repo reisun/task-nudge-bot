@@ -32,7 +32,8 @@ _NOTIFY_ORDER = ["overdue", "today", "week"]
 _CONTEXT_ORDER = ["overdue", "today", "week", "no_date"]
 
 
-def post_tasks(categorized: dict[str, list[dict]]) -> str | None:
+def post_tasks(categorized: dict[str, list[dict]],
+               completed: list[dict] | None = None) -> str | None:
     """カテゴリ別タスク一覧をClaudeで整形してSlackチャンネルに投稿."""
     global _categorized_tasks, _all_tasks
     _categorized_tasks = categorized
@@ -44,6 +45,11 @@ def post_tasks(categorized: dict[str, list[dict]]) -> str | None:
 
     # Claudeに整形させる
     tasks_context = _format_categorized(categorized, _NOTIFY_ORDER)
+    if completed:
+        completed_lines = "\n\n【今日完了したタスク】"
+        for t in completed:
+            completed_lines += f"\n• {t.get('title', '(no title)')}"
+        tasks_context += completed_lines
     claude_text = generate_notification(tasks_context)
 
     if claude_text:
