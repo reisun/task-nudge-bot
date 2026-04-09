@@ -61,7 +61,9 @@ def _format_habits(habits: list[dict]) -> str:
     """bot._format_habits() のロジックを再現."""
     lines = ["\n\n【習慣】"]
     for h in habits:
-        lines.append(f"• {h.get('name', '(no name)')}")
+        checked = h.get("checked_today", False)
+        mark = "✅" if checked else "⬜"
+        lines.append(f"{mark} {h.get('name', '(no name)')}")
     return "\n".join(lines)
 
 
@@ -150,12 +152,20 @@ class TestFormatCategorized:
 class TestFormatHabits:
     """_format_habits() のフォーマットロジック."""
 
-    def test_basic(self):
-        habits = [{"name": "運動"}, {"name": "読書"}]
+    def test_checked_habit(self):
+        habits = [{"name": "運動", "checked_today": True}]
         result = _format_habits(habits)
-        assert "【習慣】" in result
-        assert "• 運動" in result
-        assert "• 読書" in result
+        assert "✅ 運動" in result
+
+    def test_unchecked_habit(self):
+        habits = [{"name": "読書", "checked_today": False}]
+        result = _format_habits(habits)
+        assert "⬜ 読書" in result
+
+    def test_missing_checked_defaults_unchecked(self):
+        habits = [{"name": "瞑想"}]
+        result = _format_habits(habits)
+        assert "⬜ 瞑想" in result
 
     def test_empty(self):
         result = _format_habits([])

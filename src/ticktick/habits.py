@@ -54,7 +54,7 @@ def _is_today_habit(repeat_rule: str | None) -> bool:
 
 
 async def _fetch_habits() -> list[dict]:
-    """V2 APIから今日の習慣一覧を取得."""
+    """V2 APIから今日の習慣一覧を取得（チェック状態付き）."""
     v1_token = _get_v1_token()
     client = TickTickClient(
         client_id=os.environ["TICKTICK_CLIENT_ID"],
@@ -66,16 +66,25 @@ async def _fetch_habits() -> list[dict]:
     try:
         await client.connect()
         habits = await client.get_all_habits()
+
+        # 今日のチェックイン状態を取得
+        today_stamp = int(datetime.now(JST).strftime("%Y%m%d"))
+        habit_ids = [h.id for h in habits]
+        checkins_dict = await client.get_habit_checkins(habit_ids) if habit_ids else {}
+
         result = []
         for h in habits:
             if not _is_today_habit(getattr(h, "repeat_rule", None)):
                 continue
+            checkins = checkins_dict.get(h.id, [])
+            checked_today = any(c.checkin_stamp == today_stamp for c in checkins)
             result.append({
                 "id": h.id,
                 "name": h.name,
                 "status": getattr(h, "status", None),
                 "goal": getattr(h, "goal", None),
                 "frequency": getattr(h, "frequency", None),
+                "checked_today": checked_today,
             })
         return result
     finally:

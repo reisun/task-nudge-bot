@@ -296,10 +296,12 @@ def _format_tasks_context() -> str:
 
 
 def _format_habits(habits: list[dict]) -> str:
-    """習慣リストを文字列化."""
+    """習慣リストを文字列化（チェック状態付き）."""
     lines = ["\n\n【習慣】"]
     for h in habits:
-        lines.append(f"• {h.get('name', '(no name)')}")
+        checked = h.get("checked_today", False)
+        mark = "✅" if checked else "⬜"
+        lines.append(f"{mark} {h.get('name', '(no name)')}")
     return "\n".join(lines)
 
 
