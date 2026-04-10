@@ -141,8 +141,8 @@ class TickTickClient:
           no_date  — 期限未設定
           future   — 来週以降
         """
-        today = datetime.now(JST).date()
-        week_end = today + timedelta(days=(6 - today.weekday()))  # 今週の日曜
+        today_jst = datetime.now(JST).date()
+        week_end_jst = today_jst + timedelta(days=(6 - today_jst.weekday()))  # 今週の日曜
 
         categories: dict[str, list[dict]] = {
             "overdue": [],
@@ -153,17 +153,16 @@ class TickTickClient:
         }
 
         for task in self.get_all_tasks():
-            due = task.get("dueDate", "")
-            if not due:
+            due_utc = task.get("dueDate", "")
+            if not due_utc:
                 categories["no_date"].append(task)
                 continue
-            # TickTickのdueDateはUTC ISO形式 → JSTに変換して日付を取得
-            due_date = _parse_due_date_jst(due)
-            if due_date < today:
+            due_jst = _parse_due_date_jst(due_utc)
+            if due_jst < today_jst:
                 categories["overdue"].append(task)
-            elif due_date == today:
+            elif due_jst == today_jst:
                 categories["today"].append(task)
-            elif due_date <= week_end:
+            elif due_jst <= week_end_jst:
                 categories["week"].append(task)
             else:
                 categories["future"].append(task)
@@ -172,17 +171,17 @@ class TickTickClient:
 
     def get_todays_completed_tasks(self) -> list[dict]:
         """今日完了したタスクを取得."""
-        today_jst = datetime.now(JST).replace(hour=0, minute=0, second=0, microsecond=0)
-        tomorrow_jst = today_jst + timedelta(days=1)
+        today_start_jst = datetime.now(JST).replace(hour=0, minute=0, second=0, microsecond=0)
+        tomorrow_start_jst = today_start_jst + timedelta(days=1)
         # TickTick APIはUTC形式を期待
-        from_str = today_jst.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S+0000")
-        to_str = tomorrow_jst.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S+0000")
+        from_utc = today_start_jst.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S+0000")
+        to_utc = tomorrow_start_jst.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S+0000")
 
         timeout = httpx.Timeout(30.0, connect=10.0)
         resp = httpx.post(
             f"{BASE_URL}/task/completed",
             headers=self._headers(),
-            json={"from": from_str, "to": to_str},
+            json={"from": from_utc, "to": to_utc},
             timeout=timeout,
         )
         if resp.status_code == 401:
@@ -190,21 +189,21 @@ class TickTickClient:
             resp = httpx.post(
                 f"{BASE_URL}/task/completed",
                 headers=self._headers(),
-                json={"from": from_str, "to": to_str},
+                json={"from": from_utc, "to": to_utc},
                 timeout=timeout,
             )
         resp.raise_for_status()
         tasks = resp.json() if isinstance(resp.json(), list) else []
 
-        # APIのfrom/toが効かない場合があるため、クライアント側でフィルタ
-        today_date = today_jst.date()
+        # APIのfrom/toが効かない場合があるため、クライアント側でJSTでフィルタ
+        today_date_jst = today_start_jst.date()
         result = []
         for t in tasks:
-            completed = t.get("completedTime", "")
-            if not completed:
+            completed_utc = t.get("completedTime", "")
+            if not completed_utc:
                 continue
-            completed_date = _parse_due_date_jst(completed)
-            if completed_date == today_date:
+            completed_jst = _parse_due_date_jst(completed_utc)
+            if completed_jst == today_date_jst:
                 result.append(t)
         return result
 
