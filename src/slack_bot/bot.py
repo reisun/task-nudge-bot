@@ -20,6 +20,9 @@ ticktick_client: TickTickClient | None = None
 # botが投稿したメッセージのtsを記録（スレッド判定用）
 _bot_message_timestamps: set[str] = set()
 
+# TickTick再認証待ちスレッド
+_auth_pending_thread: str | None = None
+
 # タスクコンテキスト（カテゴリ別）
 _categorized_tasks: dict[str, list[dict]] = {}
 # 全タスクのフラットリスト（完了・検索用）
@@ -96,6 +99,25 @@ def handle_message(event: dict, say) -> None:
     msg_ts = event.get("ts")
     THINKING_EMOJI = "thinking_face"
 
+    # --- 認証コード受付 ---
+    global _auth_pending_thread
+    if _auth_pending_thread and thread_ts == _auth_pending_thread:
+        code = user_text.strip()
+        if code and len(code) > 10 and not code.startswith("http"):
+            try:
+                ticktick_client.exchange_code(code)
+                # タスクキャッシュをクリアして再取得を促す
+                global _all_tasks, _categorized_tasks, _task_fetch_error
+                _all_tasks = []
+                _categorized_tasks = {}
+                _task_fetch_error = None
+                _auth_pending_thread = None
+                say("認証が完了しました！タスクを取得できるようになりました :tada:", thread_ts=thread_ts)
+            except Exception:
+                logger.exception("Token exchange failed")
+                say("認証コードが無効か期限切れのようです。もう一度認証URLを開いてやり直してみてください。", thread_ts=thread_ts)
+            return
+
     # --- スレッド返信 ---
     if thread_ts and thread_ts in _bot_message_timestamps:
         threading.Thread(
@@ -146,6 +168,26 @@ def _respond_with_progress(channel: str, thread_ts: str | None, user_text: str):
     except Exception:
         logger.exception("AI nudge generation failed")
         reply = "ちょっとエラーが起きちゃった :sweat_smile: もう一度試してみて！"
+
+    # **AUTH_NEEDED** マーカーを検出して認証URLを投稿
+    if "**AUTH_NEEDED**" in reply:
+        global _auth_pending_thread
+        reply = reply.replace("**AUTH_NEEDED**", "").strip()
+        # 仮メッセージを最終応答に置き換え
+        try:
+            app.client.chat_update(channel=channel, ts=status_ts, text=reply)
+        except Exception:
+            logger.exception("Failed to update final message")
+        if ticktick_client:
+            auth_url = ticktick_client.get_auth_url()
+            reply_target = thread_ts or status_ts
+            resp = app.client.chat_postMessage(
+                channel=channel,
+                thread_ts=reply_target,
+                text=f":key: 以下のURLをブラウザで開いて認証してください:\n{auth_url}\n\n認証後、リダイレクトされたURLの `code=` の値をこのスレッドに貼り付けてください。",
+            )
+            _auth_pending_thread = reply_target
+        return
 
     # **DONE:タスク名** マーカーを検出して完了処理
     done_match = re.search(r"\*\*DONE:(.+?)\*\*", reply)
