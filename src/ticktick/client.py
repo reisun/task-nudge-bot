@@ -27,6 +27,7 @@ def _parse_due_date_jst(due_str: str) -> date:
         return date.fromisoformat(due_str[:10])
 
 
+AUTH_URL = "https://ticktick.com/oauth/authorize"
 BASE_URL = "https://api.ticktick.com/open/v1"
 TOKEN_URL = "https://ticktick.com/oauth/token"
 TOKEN_FILE = Path(os.environ.get("TOKEN_FILE", ".tokens.json"))
@@ -74,6 +75,33 @@ class TickTickClient:
             data={
                 "grant_type": "refresh_token",
                 "refresh_token": refresh,
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+            },
+        )
+        resp.raise_for_status()
+        self._save_token(resp.json())
+
+    def get_auth_url(self) -> str:
+        """OAuth認証URLを生成."""
+        from urllib.parse import urlencode
+        params = urlencode({
+            "client_id": self.client_id,
+            "redirect_uri": self.redirect_uri,
+            "response_type": "code",
+            "scope": "tasks:read tasks:write",
+            "state": "nudge-bot",
+        })
+        return f"{AUTH_URL}?{params}"
+
+    def exchange_code(self, code: str) -> None:
+        """認証コードをトークンに交換して保存."""
+        resp = httpx.post(
+            TOKEN_URL,
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": self.redirect_uri,
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
             },
