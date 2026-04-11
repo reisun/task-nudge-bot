@@ -103,7 +103,7 @@ def handle_message(event: dict, say) -> None:
     global _auth_pending_thread
     if _auth_pending_thread and thread_ts == _auth_pending_thread:
         code = user_text.strip()
-        if code and len(code) > 10 and not code.startswith("http"):
+        if code and not code.startswith("http"):
             try:
                 ticktick_client.exchange_code(code)
                 # タスクキャッシュをクリアして再取得を促す
