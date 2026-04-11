@@ -8,7 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && npm install -g @anthropic-ai/claude-code \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m -s /bin/bash botuser
+RUN useradd -m -s /bin/bash botuser \
+    && mkdir -p /data && chown botuser:botuser /data
 
 WORKDIR /app
 
