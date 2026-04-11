@@ -231,16 +231,21 @@ def _find_task(hint: str) -> dict | None:
     return None
 
 
+_task_fetch_error: str | None = None
+
+
 def _refresh_tasks() -> None:
     """TickTickからタスクを再取得してキャッシュを更新."""
-    global _categorized_tasks, _all_tasks
+    global _categorized_tasks, _all_tasks, _task_fetch_error
     if ticktick_client and not _all_tasks:
         try:
             _categorized_tasks = ticktick_client.get_categorized_tasks()
             _all_tasks = [t for cat in _CONTEXT_ORDER for t in _categorized_tasks.get(cat, [])]
+            _task_fetch_error = None
             logger.info("Refreshed tasks: %d found", len(_all_tasks))
-        except Exception:
+        except Exception as e:
             logger.exception("Failed to refresh tasks")
+            _task_fetch_error = str(e)
 
 
 def _format_categorized(categorized: dict[str, list[dict]], order: list[str]) -> str:
@@ -273,7 +278,9 @@ def _format_categorized(categorized: dict[str, list[dict]], order: list[str]) ->
 def _format_tasks_context() -> str:
     """カテゴリ別タスクリストを文字列化（Claude向け会話コンテキスト）."""
     _refresh_tasks()
-    if not _all_tasks:
+    if _task_fetch_error:
+        context = f"【エラー】タスクの取得に失敗しました: {_task_fetch_error}"
+    elif not _all_tasks:
         context = "タスクはありません。"
     else:
         context = _format_categorized(_categorized_tasks, _CONTEXT_ORDER)
