@@ -175,7 +175,7 @@ def _respond_with_progress(channel: str, thread_ts: str | None, user_text: str):
         reply = reply.replace("**AUTH_NEEDED**", "").strip()
         # 仮メッセージを最終応答に置き換え
         try:
-            app.client.chat_update(channel=channel, ts=status_ts, text=reply)
+            app.client.chat_update(channel=channel, ts=status_ts, text=reply or "(応答なし)")
         except Exception:
             logger.exception("Failed to update final message")
         if ticktick_client:
@@ -209,7 +209,7 @@ def _respond_with_progress(channel: str, thread_ts: str | None, user_text: str):
 
     # 仮メッセージを最終応答に置き換え
     try:
-        app.client.chat_update(channel=channel, ts=status_ts, text=reply)
+        app.client.chat_update(channel=channel, ts=status_ts, text=reply or "(応答なし)")
     except Exception:
         logger.exception("Failed to update final message")
 
