@@ -312,7 +312,9 @@ def _format_categorized(categorized: dict[str, list[dict]], order: list[str]) ->
                 due_suffix = f" (期限: {due_date.isoformat()})"
             else:
                 due_suffix = ""
-            lines.append(f"{idx}. {t.get('title', '(no title)')}{due_suffix}")
+            content = t.get("content", "").strip()
+            content_suffix = f"\n   → {content}" if content else ""
+            lines.append(f"{idx}. {t.get('title', '(no title)')}{due_suffix}{content_suffix}")
             idx += 1
     return "\n".join(lines)
 

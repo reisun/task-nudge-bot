@@ -48,7 +48,9 @@ def _format_categorized(categorized: dict[str, list[dict]], order: list[str]) ->
         for t in tasks:
             due = t.get("dueDate", "")
             due_suffix = f" (期限: {due[:10]})" if due else ""
-            lines.append(f"{idx}. {t.get('title', '(no title)')}{due_suffix}")
+            content = t.get("content", "").strip()
+            content_suffix = f"\n   → {content}" if content else ""
+            lines.append(f"{idx}. {t.get('title', '(no title)')}{due_suffix}{content_suffix}")
             idx += 1
     return "\n".join(lines)
 
