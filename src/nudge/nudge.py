@@ -1,15 +1,16 @@
-"""AI Nudge — Claude CLIでナッジ応答を生成."""
+"""AI Nudge — Agent Gateway経由でナッジ応答を生成."""
 
 import logging
-import subprocess
+import os
 import time
-import threading
-from datetime import datetime
 
+import httpx
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
+AGENT_GATEWAY_URL = os.environ.get("AGENT_GATEWAY_URL", "http://llm-internal-proxy/agent")
 
 SYSTEM_PROMPT = """\
 あなたは生活支援botです。
@@ -75,9 +76,69 @@ Slackチャンネルに投稿されるため書式に注意してください。
 """
 
 
+_POLL_INTERVAL = 5
+_DEFAULT_TIMEOUT = 300
+
+
+def _submit_job(prompt: str, system_prompt: str, timeout: int = _DEFAULT_TIMEOUT) -> str | None:
+    """Agent Gateway にジョブを投入し job_id を返す."""
+    payload = {
+        "agent": "claude",
+        "prompt": prompt,
+        "model": "sonnet",
+        "system_prompt": system_prompt,
+        "timeout": timeout,
+        "permissions": "readonly",
+    }
+    try:
+        resp = httpx.post(f"{AGENT_GATEWAY_URL}/run", json=payload, timeout=30)
+        resp.raise_for_status()
+        return resp.json()["job_id"]
+    except (httpx.HTTPError, KeyError) as e:
+        logger.error("Agent Gateway submit failed: %s", e)
+        return None
+
+
+def _poll_job(job_id: str, timeout: int = _DEFAULT_TIMEOUT,
+              on_progress=None) -> str | None:
+    """ジョブ完了までポーリングし結果を返す."""
+    start = time.monotonic()
+    while True:
+        elapsed = int(time.monotonic() - start)
+        if elapsed > timeout + 30:
+            logger.error("Agent Gateway polling timed out for job %s", job_id)
+            return None
+
+        if on_progress and elapsed >= 10:
+            on_progress(elapsed)
+
+        try:
+            resp = httpx.get(
+                f"{AGENT_GATEWAY_URL}/jobs/{job_id}", timeout=15
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.HTTPError as e:
+            logger.warning("Agent Gateway poll error: %s", e)
+            time.sleep(_POLL_INTERVAL)
+            continue
+
+        status = data.get("status")
+        if status == "done":
+            return data.get("result", "").strip()
+        elif status == "failed":
+            logger.error("Agent Gateway job failed: %s", data.get("error"))
+            return None
+        elif status in ("queued", "running"):
+            time.sleep(_POLL_INTERVAL)
+        else:
+            logger.warning("Unknown job status: %s", status)
+            time.sleep(_POLL_INTERVAL)
+
+
 def generate_nudge(user_message: str, tasks_context: str,
                     on_progress=None) -> str:
-    """Claude CLIを呼び出してナッジ応答を生成.
+    """Agent Gateway経由でナッジ応答を生成.
 
     Args:
         user_message: ユーザーの入力テキスト
@@ -100,43 +161,19 @@ def generate_nudge(user_message: str, tasks_context: str,
 {user_message}
 """
 
-    try:
-        proc = subprocess.Popen(
-            [
-                "claude",
-                "--print",
-                "-p", prompt,
-                "--system-prompt", SYSTEM_PROMPT,
-                "--allowedTools", "WebSearch", "WebFetch",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+    job_id = _submit_job(prompt, SYSTEM_PROMPT, timeout=_DEFAULT_TIMEOUT)
+    if not job_id:
+        return "うまく考えがまとまらなかった… もう一回話してみて！"
 
-        start = time.monotonic()
-        while proc.poll() is None:
-            time.sleep(5)
-            elapsed = int(time.monotonic() - start)
-            if on_progress and elapsed >= 10:
-                on_progress(elapsed)
+    result = _poll_job(job_id, timeout=_DEFAULT_TIMEOUT, on_progress=on_progress)
+    if not result:
+        return "うまく考えがまとまらなかった… もう一回話してみて！"
 
-        stdout = proc.stdout.read()
-        stderr = proc.stderr.read()
-
-        if proc.returncode != 0:
-            logger.error("Claude CLI error: %s", stderr)
-            return "うまく考えがまとまらなかった… もう一回話してみて！"
-
-        return stdout.strip()
-
-    except FileNotFoundError:
-        logger.error("Claude CLI not found. Is it installed?")
-        return "AI機能が使えない状態です。管理者に連絡してください。"
+    return result
 
 
 def generate_notification(tasks_context: str) -> str:
-    """定時通知用のメッセージをClaudeに生成させる."""
+    """定時通知用のメッセージを生成させる."""
     now = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M")
 
     prompt = f"""\
@@ -147,25 +184,9 @@ def generate_notification(tasks_context: str) -> str:
 {tasks_context}
 """
 
-    try:
-        result = subprocess.run(
-            [
-                "claude",
-                "--print",
-                "-p", prompt,
-                "--system-prompt", NOTIFICATION_PROMPT,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-
-        if result.returncode != 0:
-            logger.error("Claude CLI error: %s", result.stderr)
-            return None
-
-        return result.stdout.strip()
-
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        logger.exception("Claude CLI failed for notification")
+    job_id = _submit_job(prompt, NOTIFICATION_PROMPT, timeout=120)
+    if not job_id:
         return None
+
+    result = _poll_job(job_id, timeout=120)
+    return result
