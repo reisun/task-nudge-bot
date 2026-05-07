@@ -5,10 +5,17 @@ services:
     environment:
       - TOKEN_FILE=/data/.tokens.json
       - PYTHONUNBUFFERED=1
+      - AGENT_GATEWAY_URL=http://llm-internal-proxy/agent
     volumes:
       - bot-data:/data
-      - ${HOME}/.claude:/mnt/claude
+    networks:
+      - default
+      - llm-network
     restart: unless-stopped
 
 volumes:
   bot-data:
+
+networks:
+  llm-network:
+    external: true
